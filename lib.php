@@ -228,16 +228,16 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
     public function delete_many(array $keys) {
         $count = 0;
         $pipeline = $this->redis->pipeline();
-        foreach ($key as $keys) {
+        foreach ($keys as $key) {
             $pipeline->delete($key);
         }
         $results = $pipeline->exec();
-        foreach ($result as $results) {
+        foreach ($results as $result) {
             if ($result) {
                 $count++;
             }
         }
-        return $count
+        return $count;
     }
 
     /**
