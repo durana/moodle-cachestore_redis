@@ -157,12 +157,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      */
     public function get_many($keys) {
         $values = $this->redis->mget($keys);
-        $result = array();
-        $index = 0;
-        foreach ($keys as $key) {
-            $result[$key] = $values[$index++];
-        }
-        return $result;
+        return array_combine($keys, $values);
     }
 
     /**
