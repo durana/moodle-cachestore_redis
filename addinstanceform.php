@@ -11,7 +11,6 @@
 defined('MOODLE_INTERNAL') || die();
 
 require_once($CFG->dirroot.'/cache/forms.php');
-require_once($CFG->dirroot.'/cache/stores/memcached/lib.php');
 
 /**
  * Form for adding instance of Redis Cache Store.
