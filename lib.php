@@ -94,7 +94,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
         $this->redis = new Redis();
         $this->redis->connect($configuration['server']);
         $this->redis->setOption(Redis::OPT_SERIALIZER, Redis::SERIALIZER_PHP);
-        $this->redis->setOption(Redis::OPT_PREFIX, $this->name.$prefix);
+        $this->redis->setOption(Redis::OPT_PREFIX, $prefix . $this->name);
     }
 
     /**
