@@ -16,13 +16,34 @@ defined('MOODLE_INTERNAL') || die();
  * @copyright   2013 Adam Durana
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
-class cachestore_redis extends cache_store implements cache_is_key_aware, cache_is_lockable, cache_is_configurable {
+class cachestore_redis extends cache_store implements cache_is_key_aware, cache_is_lockable, cache_is_configurable, cache_is_searchable {
     /**
      * Name of this store.
      *
      * @var string
      */
     protected $name;
+
+    /**
+     * Server connection string.
+     *
+     * @var string
+     */
+    protected $server;
+
+    /**
+     * Used as part of the key prefix.
+     *
+     * @var string
+     */
+    protected $prefix;
+
+    /**
+     * Flag for readiness!
+     *
+     * @var boolean
+     */
+    protected $isready = false;
 
     /**
      * Cache definition for this store.
@@ -89,12 +110,68 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
         if (!array_key_exists('server', $configuration) || empty($configuration['server'])) {
             return;
         }
-        $prefix = !empty($configuration['prefix']) ? $configuration['prefix'] : '';
+        $this->prefix  = !empty($configuration['prefix']) ? $configuration['prefix'] : '';
+        $this->server  = $configuration['server'];
+        $this->redis   = $this->new_redis();
+        $this->isready = $this->ping();
+    }
 
-        $this->redis = new Redis();
-        $this->redis->connect($configuration['server']);
-        $this->redis->setOption(Redis::OPT_SERIALIZER, Redis::SERIALIZER_PHP);
-        $this->redis->setOption(Redis::OPT_PREFIX, $prefix . $this->name);
+    /**
+     * Stores are cloned all the time.  Create a new
+     * Redis instance so it can have its own options.
+     *
+     * This is important for the prefix set by the definition
+     * otherwise, stores start using the last set prefix.
+     */
+    public function __clone() {
+        if ($this->redis instanceof Redis) {
+            $this->redis = $this->new_redis();
+        }
+    }
+
+    /**
+     * Create a new Redis instance and
+     * connect to the server.
+     *
+     * @return Redis
+     */
+    protected function new_redis() {
+        $redis = new Redis();
+        $redis->connect($this->server);
+        $redis->setOption(Redis::OPT_SERIALIZER, Redis::SERIALIZER_PHP);
+
+        return $redis;
+    }
+
+    /**
+     * See if we can ping Redis server
+     *
+     * @return bool
+     */
+    protected function ping() {
+        try {
+            $this->redis->ping();
+        } catch (Exception $e) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Redis returns keys with their prefix, but
+     * in order to to use these keys for deletion,
+     * lookup, etc, we need to remove that prefix.
+     *
+     * @param array $keys
+     */
+    protected function remove_prefix(&$keys) {
+        if (empty($keys)) {
+            return;
+        }
+        $length = strlen($this->redis->getOption(Redis::OPT_PREFIX));
+        foreach ($keys as $index => $key) {
+            $keys[$index] = substr($key, $length);
+        }
     }
 
     /**
@@ -107,13 +184,14 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
     }
 
     /**
-     * InitialiZe the store.
+     * Initialize the store.
      *
      * @param cache_definition $definition
      * @return bool
      */
     public function initialise(cache_definition $definition) {
         $this->definition = $definition;
+        $this->redis->setOption(Redis::OPT_PREFIX, $this->prefix.$this->name.$definition->generate_definition_hash().'-');
         return true;
     }
 
@@ -132,12 +210,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return bool
      */
     public function is_ready() {
-        try {
-            $this->redis->ping();
-        } catch (Exception $e) {
-            return false;
-        }
-        return true;
+        return $this->isready;
     }
 
     /**
@@ -222,18 +295,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return int The number of keys successfully deleted.
      */
     public function delete_many(array $keys) {
-        $count = 0;
-        $pipeline = $this->redis->pipeline();
-        foreach ($keys as $key) {
-            $pipeline->delete($key);
-        }
-        $results = $pipeline->exec();
-        foreach ($results as $result) {
-            if ($result) {
-                $count++;
-            }
-        }
-        return $count;
+        return $this->redis->delete($keys);
     }
 
     /**
@@ -242,11 +304,34 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return bool
      */
     public function purge() {
-        $keys = $this->redis->keys('*');
-        if (sizeof($keys) > 0) {
-            $this->delete_many($keys);
+        $keys = $this->find_all();
+        if (!empty($keys)) {
+            return $this->delete_many($keys) == count($keys);
         }
         return true;
+    }
+
+    /**
+     * Finds all of the keys being used by the cache store.
+     *
+     * @return array.
+     */
+    public function find_all() {
+        $keys = $this->redis->keys('*');
+        $this->remove_prefix($keys);
+        return $keys;
+    }
+
+    /**
+     * Finds all of the keys whose keys start with the given prefix.
+     *
+     * @param string $prefix
+     * @return array
+     */
+    public function find_by_prefix($prefix) {
+        $keys = $this->redis->keys($prefix.'*');
+        $this->remove_prefix($keys);
+        return $keys;
     }
 
     /**
@@ -377,7 +462,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return array
      */
     public static function config_get_configuration_array($data) {
-        return array('server' => $data->server);
+        return array('server' => $data->server, 'prefix' => $data->prefix);
     }
 
     /**
@@ -390,6 +475,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
     public static function config_set_edit_form_data(moodleform $editform, array $config) {
         $data = array();
         $data['server'] = $config['server'];
+        $data['prefix'] = !empty($config['prefix']) ? $config['prefix'] : '';
         $editform->set_data($data);
     }
 }
