@@ -15,8 +15,12 @@ defined('MOODLE_INTERNAL') || die();
  *
  * @copyright   2013 Adam Durana
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @todo TTL support was removed, but might be able to add it back by setting
+ *       the TTL on the hash key.  So, after a set, we could use http://redis.io/commands/pttl
+ *       to see if the hash is set to expire, if not, set a TTL on it.  Must prevent it from
+ *       doing it on every set though.
  */
-class cachestore_redis extends cache_store implements cache_is_key_aware, cache_is_lockable, cache_is_configurable, cache_is_searchable {
+class cachestore_redis extends cache_store implements cache_is_key_aware, cache_is_lockable, cache_is_configurable {
     /**
      * Name of this store.
      *
@@ -25,18 +29,11 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
     protected $name;
 
     /**
-     * Server connection string.
+     * The definition hash, used for hash key
      *
      * @var string
      */
-    protected $server;
-
-    /**
-     * Used as part of the key prefix.
-     *
-     * @var string
-     */
-    protected $prefix;
+    protected $hash;
 
     /**
      * Flag for readiness!
@@ -75,7 +72,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return bool
      */
     public static function is_supported_mode($mode) {
-        return ($mode === self::MODE_APPLICATION || $mode === self::MODE_SESSION);
+        return ($mode === self::MODE_APPLICATION);
     }
 
     /**
@@ -85,7 +82,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return int
      */
     public static function get_supported_features(array $configuration = array()) {
-        return self::SUPPORTS_DATA_GUARANTEE + self::SUPPORTS_NATIVE_TTL;
+        return self::SUPPORTS_DATA_GUARANTEE;
     }
 
     /**
@@ -95,7 +92,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return int
      */
     public static function get_supported_modes(array $configuration = array()) {
-        return self::MODE_APPLICATION + self::MODE_SESSION;
+        return self::MODE_APPLICATION;
     }
 
     /**
@@ -110,68 +107,46 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
         if (!array_key_exists('server', $configuration) || empty($configuration['server'])) {
             return;
         }
-        $this->prefix  = !empty($configuration['prefix']) ? $configuration['prefix'] : '';
-        $this->server  = $configuration['server'];
-        $this->redis   = $this->new_redis();
-        $this->isready = $this->ping();
-    }
-
-    /**
-     * Stores are cloned all the time.  Create a new
-     * Redis instance so it can have its own options.
-     *
-     * This is important for the prefix set by the definition
-     * otherwise, stores start using the last set prefix.
-     */
-    public function __clone() {
-        if ($this->redis instanceof Redis) {
-            $this->redis = $this->new_redis();
-        }
+        $prefix = !empty($configuration['prefix']) ? $configuration['prefix'] : '';
+        $this->redis = $this->new_redis($configuration['server'], $prefix);
     }
 
     /**
      * Create a new Redis instance and
      * connect to the server.
      *
+     * @param string $server The server connection string
+     * @param string $prefix The key prefix
      * @return Redis
      */
-    protected function new_redis() {
+    protected function new_redis($server, $prefix = '') {
         $redis = new Redis();
-        $redis->connect($this->server);
-        $redis->setOption(Redis::OPT_SERIALIZER, Redis::SERIALIZER_PHP);
+        if ($redis->connect($server)) {
+            $redis->setOption(Redis::OPT_SERIALIZER, Redis::SERIALIZER_PHP);
+            $redis->setOption(Redis::OPT_PREFIX, $prefix.$this->name.'-');
 
+            $this->isready = $this->ping($redis);
+        } else {
+            $this->isready = false;
+        }
         return $redis;
     }
 
     /**
      * See if we can ping Redis server
      *
+     * @param Redis $redis
      * @return bool
      */
-    protected function ping() {
+    protected function ping(Redis $redis) {
         try {
-            $this->redis->ping();
+            if ($redis->ping() === false) {
+                return false;
+            }
         } catch (Exception $e) {
             return false;
         }
         return true;
-    }
-
-    /**
-     * Redis returns keys with their prefix, but
-     * in order to to use these keys for deletion,
-     * lookup, etc, we need to remove that prefix.
-     *
-     * @param array $keys
-     */
-    protected function remove_prefix(&$keys) {
-        if (empty($keys)) {
-            return;
-        }
-        $length = strlen($this->redis->getOption(Redis::OPT_PREFIX));
-        foreach ($keys as $index => $key) {
-            $keys[$index] = substr($key, $length);
-        }
     }
 
     /**
@@ -191,7 +166,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      */
     public function initialise(cache_definition $definition) {
         $this->definition = $definition;
-        $this->redis->setOption(Redis::OPT_PREFIX, $this->prefix.$this->name.$definition->generate_definition_hash().'-');
+        $this->hash       = $definition->generate_definition_hash();
         return true;
     }
 
@@ -220,7 +195,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return mixed The value of the key, or false if there is no value associated with the key.
      */
     public function get($key) {
-        return $this->redis->get($key);
+        return $this->redis->hGet($this->hash, $key);
     }
 
     /**
@@ -230,8 +205,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return array An array of the values of the given keys.
      */
     public function get_many($keys) {
-        $values = $this->redis->mget($keys);
-        return array_combine($keys, $values);
+        return $this->redis->hMGet($this->hash, $keys);
     }
 
     /**
@@ -242,11 +216,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return bool True if the operation succeeded, false otherwise.
      */
     public function set($key, $value) {
-        $ttl = $this->definition->get_ttl();
-        if ($ttl > 0) {
-            return $this->redis->setex($key, $ttl, $value);
-        }
-        return $this->redis->set($key, $value);
+        return ($this->redis->hSet($this->hash, $key, $value) !== false);
     }
 
     /**
@@ -257,22 +227,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return int The number of key/value pairs successfuly set.
      */
     public function set_many(array $keyvalues) {
-        $ttl = $this->definition->get_ttl();
-        if ($ttl > 0) {
-            $pipeline = $this->redis->pipeline();
-            foreach ($keyvalues as $pair) {
-                $pipeline->setex($pair['key'], $ttl, $pair['value']);
-            }
-            $results = $pipeline->exec();
-            $count = 0;
-            foreach ($results as $result) {
-                if ($result) {
-                    $count++;
-                }
-            }
-            return $count;
-        }
-        if ($this->redis->mset($keyvalues)) {
+        if ($this->redis->hMSet($this->hash, $keyvalues)) {
             return count($keyvalues);
         }
         return 0;
@@ -285,7 +240,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return bool True if the delete operation succeeds, false otherwise.
      */
     public function delete($key) {
-        return $this->redis->delete($key);
+        return ($this->redis->hDel($this->hash, $key) !== false);
     }
 
     /**
@@ -295,7 +250,8 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return int The number of keys successfully deleted.
      */
     public function delete_many(array $keys) {
-        return $this->redis->delete($keys);
+        array_unshift($keys, $this->hash);
+        return call_user_func_array(array($this->redis, 'hDel'), $keys);
     }
 
     /**
@@ -304,34 +260,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return bool
      */
     public function purge() {
-        $keys = $this->find_all();
-        if (!empty($keys)) {
-            return $this->delete_many($keys) == count($keys);
-        }
-        return true;
-    }
-
-    /**
-     * Finds all of the keys being used by the cache store.
-     *
-     * @return array.
-     */
-    public function find_all() {
-        $keys = $this->redis->keys('*');
-        $this->remove_prefix($keys);
-        return $keys;
-    }
-
-    /**
-     * Finds all of the keys whose keys start with the given prefix.
-     *
-     * @param string $prefix
-     * @return array
-     */
-    public function find_by_prefix($prefix) {
-        $keys = $this->redis->keys($prefix.'*');
-        $this->remove_prefix($keys);
-        return $keys;
+        return ($this->redis->del($this->hash) !== false);
     }
 
     /**
@@ -372,7 +301,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return bool True if the key exists, false if it does not.
      */
     public function has($key) {
-        return $this->redis->exists($key);
+        return $this->redis->hExists($this->hash, $key);
     }
 
     /**
@@ -449,7 +378,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      */
     public function release_lock($key, $ownerid) { 
         if ($this->check_lock_state($key, $ownerid)) {
-            return $this->redis->delete($key);
+            return ($this->redis->del($key) !== false);
         }
         return false;
     }
