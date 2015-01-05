@@ -23,7 +23,9 @@ class cachestore_redis_test extends basic_testcase {
     }
 
     protected function tearDown() {
-        $this->store->instance_deleted();
+        if (defined('CACHESTORE_REDIS_TEST_SERVER')) {
+            $this->store->instance_deleted();
+        }
     }
 
     public function test_initialise() {
