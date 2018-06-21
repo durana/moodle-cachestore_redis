@@ -127,7 +127,8 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
             return;
         }
         $prefix = !empty($configuration['prefix']) ? $configuration['prefix'] : '';
-        $this->redis = $this->new_redis($configuration['server'], $prefix);
+        $password = !empty($configuration['password']) ? $configuration['password'] : '';
+        $this->redis = $this->new_redis($configuration['server'], $prefix, $password);
     }
 
     /**
@@ -136,11 +137,15 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      *
      * @param string $server The server connection string
      * @param string $prefix The key prefix
+     * @param string $password The server connection password
      * @return Redis
      */
-    protected function new_redis($server, $prefix = '') {
+    protected function new_redis($server, $prefix = '', $password = '') {
         $redis = new Redis();
         if ($redis->connect($server)) {
+            if (!empty($password)) {
+                $redis->auth($password);
+            }
             $redis->setOption(Redis::OPT_SERIALIZER, Redis::SERIALIZER_PHP);
             $redis->setOption(Redis::OPT_PREFIX, $prefix.$this->name.'-');
 
@@ -413,7 +418,12 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
      * @return array
      */
     public static function config_get_configuration_array($data) {
-        return array('server' => $data->server, 'prefix' => $data->prefix);
+        $config = array('server' => $data->server, 'prefix' => $data->prefix);
+
+        if (property_exists($data, 'password')) {
+            $config['password'] = $data->password;
+        }
+        return $config;
     }
 
     /**
@@ -427,6 +437,7 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
         $data = array();
         $data['server'] = $config['server'];
         $data['prefix'] = !empty($config['prefix']) ? $config['prefix'] : '';
+        $data['password'] = !empty($config['password']) ? $config['password'] : '';
         $editform->set_data($data);
     }
 
@@ -463,10 +474,16 @@ class cachestore_redis extends cache_store implements cache_is_key_aware, cache_
         if (!self::are_requirements_met()) {
             throw new coding_exception('Redis cache store not setup for testing');
         }
-        return [
+        $config = [
             'server' => CACHESTORE_REDIS_TEST_SERVER,
             'prefix' => $DB->get_prefix(),
         ];
+
+        if (defined('CACHESTORE_REDIS_TEST_PASSWORD')) {
+            $config['password'] = CACHESTORE_REDIS_TEST_PASSWORD;
+        }
+
+        return $config;
     }
 
     /**
