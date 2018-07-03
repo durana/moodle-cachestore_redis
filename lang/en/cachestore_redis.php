@@ -29,8 +29,14 @@ $string['pluginname'] = 'Redis';
 $string['server'] = 'Server';
 $string['server_help'] = 'This sets the hostname or IP address of the Redis server to use.';
 
+$string['password'] = 'Password';
+$string['password_help'] = 'This sets the password of the Redis server.';
+
 $string['test_server'] = 'Test Server';
 $string['test_server_desc'] = 'Redis server to use for testing.';
+
+$string['test_password'] = 'Test server password';
+$string['test_password_desc'] = 'Redis test server password.';
 
 $string['prefix'] = 'Key prefix';
 $string['prefix_help'] = 'This prefix is used for all key names on the Redis server.

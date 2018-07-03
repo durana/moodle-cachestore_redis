@@ -34,3 +34,12 @@ $settings->add(
     16
   )
 );
+
+$settings->add(
+    new admin_setting_configpasswordunmask(
+        'cachestore_redis/test_password',
+        get_string('test_password', 'cachestore_redis'),
+        get_string('test_password_desc', 'cachestore_redis'),
+        ''
+    )
+);
